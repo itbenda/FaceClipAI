@@ -3,6 +3,7 @@ import SwiftUI
 
 struct ScanView: View {
     @EnvironmentObject var store: AppStore
+    @Environment(\.scenePhase) private var scenePhase
     @State private var from = Calendar.current.date(byAdding: .day, value: -7, to: Date()) ?? Date()
     @State private var to = Date()
     @State private var auth = PHPhotoLibrary.authorizationStatus(for: .readWrite)
@@ -21,11 +22,13 @@ struct ScanView: View {
             Form {
                 if !authorized {
                     Section {
-                        Button("Cấp quyền truy cập Ảnh") {
-                            Task { auth = await PhotoService.requestAccess() }
+                        Button(auth == .notDetermined ? "Cấp quyền truy cập Ảnh" : "Mở Cài đặt để cấp quyền Ảnh") {
+                            requestPhotos()
                         }
                     } footer: {
-                        Text("Video được xử lý hoàn toàn trên iPhone, không upload đi đâu.")
+                        Text(auth == .notDetermined
+                             ? "Video được xử lý hoàn toàn trên iPhone, không upload đi đâu."
+                             : "Quyền Ảnh đang bị tắt. Vào Cài đặt → FaceClip → Ảnh → chọn \"Truy cập toàn bộ\".")
                     }
                 }
 
@@ -101,6 +104,22 @@ struct ScanView: View {
                                 titleVisibility: .visible) {
                 Button("Xoá", role: .destructive) { store.resetAll() }
             }
+            .onChange(of: scenePhase) { _, phase in
+                // user may have changed the permission in Settings
+                if phase == .active { auth = PHPhotoLibrary.authorizationStatus(for: .readWrite) }
+            }
+        }
+    }
+
+    private func requestPhotos() {
+        let current = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        if current == .notDetermined {
+            PHPhotoLibrary.requestAuthorization(for: .readWrite) { status in
+                DispatchQueue.main.async { auth = status }
+            }
+        } else if let url = URL(string: UIApplication.openSettingsURLString) {
+            auth = current
+            UIApplication.shared.open(url)
         }
     }
 }
