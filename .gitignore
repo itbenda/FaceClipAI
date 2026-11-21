@@ -1,0 +1,8 @@
+build/
+Payload/
+*.ipa
+*.xcodeproj/
+Support/Info.plist
+Models/
+.DS_Store
+__pycache__/
