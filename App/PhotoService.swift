@@ -1,6 +1,8 @@
 import AVFoundation
+import CoreTransferable
 import Photos
 import UIKit
+import UniformTypeIdentifiers
 
 enum PhotoError: LocalizedError {
     case noAVAsset, noResource, albumFailed
@@ -15,6 +17,24 @@ enum PhotoError: LocalizedError {
 }
 
 private final class Box<T> { var value: T?; init() {} }
+
+/// Video received from the system photo picker, copied (original encoding) into the app container.
+struct PickedMovie: Transferable {
+    let url: URL
+
+    static var transferRepresentation: some TransferRepresentation {
+        FileRepresentation(contentType: .movie) { movie in
+            SentTransferredFile(movie.url)
+        } importing: { received in
+            let dir = PhotoService.importedDir
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            let name = "\(UUID().uuidString.prefix(8))-\(received.file.lastPathComponent)"
+            let dest = dir.appendingPathComponent(name)
+            try FileManager.default.copyItem(at: received.file, to: dest)
+            return PickedMovie(url: dest)
+        }
+    }
+}
 
 enum PhotoService {
     static func requestAccess() async -> PHAuthorizationStatus {
@@ -70,6 +90,31 @@ enum PhotoService {
                 cont.resume(returning: img)
             }
         }
+    }
+
+    // MARK: - Imported files (system picker)
+
+    static var importedDir: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Imported", isDirectory: true)
+    }
+
+    static func importedSize() -> Int64 {
+        let files = (try? FileManager.default.contentsOfDirectory(
+            at: importedDir, includingPropertiesForKeys: [.fileSizeKey])) ?? []
+        return files.reduce(0) { sum, url in
+            sum + Int64((try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
+        }
+    }
+
+    static func fileThumbnail(_ url: URL, size: CGSize) async -> UIImage? {
+        let gen = AVAssetImageGenerator(asset: AVURLAsset(url: url))
+        gen.appliesPreferredTrackTransform = true
+        gen.maximumSize = size
+        guard let cg = try? await gen.image(at: CMTime(seconds: 0.5, preferredTimescale: 600)).image else {
+            return nil
+        }
+        return UIImage(cgImage: cg)
     }
 
     // MARK: - Share original file

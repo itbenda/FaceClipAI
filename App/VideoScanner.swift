@@ -23,6 +23,10 @@ final class VideoScanner {
 
     func scan(asset: PHAsset) async throws -> (VideoRecord, [FaceRecord]) {
         let av = try await PhotoService.avAsset(for: asset)
+        return try await scan(av: av, id: asset.localIdentifier)
+    }
+
+    func scan(av: AVAsset, id: String) async throws -> (VideoRecord, [FaceRecord]) {
         let duration = try await av.load(.duration).seconds
 
         let gen = AVAssetImageGenerator(asset: av)
@@ -49,7 +53,6 @@ final class VideoScanner {
         }
         try Task.checkCancellation()
 
-        let id = asset.localIdentifier
         let records = tracks
             .filter { $0.times.count >= 2 || $0.bestQuality >= 0.35 }
             .map {

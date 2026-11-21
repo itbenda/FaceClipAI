@@ -1,5 +1,6 @@
 import Foundation
 import Accelerate
+import Photos
 
 struct Exemplar: Codable, Hashable {
     var e: [Float]
@@ -32,6 +33,28 @@ struct VideoRecord: Codable {
     var scannedAt: Date
     var duration: Double
     var faceCount: Int
+    /// File name in PhotoService.importedDir when the video came from the system picker.
+    var localFile: String? = nil
+}
+
+/// A video shown in the UI: either a Photos asset (needs permission) or an imported copy.
+enum VideoRef: Identifiable {
+    case asset(PHAsset)
+    case file(id: String, url: URL, duration: Double)
+
+    var id: String {
+        switch self {
+        case .asset(let a): return a.localIdentifier
+        case .file(let id, _, _): return id
+        }
+    }
+
+    var duration: Double {
+        switch self {
+        case .asset(let a): return a.duration
+        case .file(_, _, let d): return d
+        }
+    }
 }
 
 struct Database: Codable {

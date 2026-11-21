@@ -68,8 +68,8 @@ struct ShareSheet: UIViewControllerRepresentable {
     func updateUIViewController(_ vc: UIActivityViewController, context: Context) {}
 }
 
-struct AssetThumb: View {
-    let asset: PHAsset
+struct VideoThumb: View {
+    let video: VideoRef
     @State private var image: UIImage?
 
     var body: some View {
@@ -79,25 +79,29 @@ struct AssetThumb: View {
                 Image(uiImage: image).resizable().scaledToFill()
             }
         }
-        .task(id: asset.localIdentifier) {
-            image = await PhotoService.thumbnail(for: asset, size: CGSize(width: 300, height: 300))
+        .task(id: video.id) {
+            let size = CGSize(width: 300, height: 300)
+            switch video {
+            case .asset(let a): image = await PhotoService.thumbnail(for: a, size: size)
+            case .file(_, let url, _): image = await PhotoService.fileThumbnail(url, size: size)
+            }
         }
     }
 }
 
 struct VideoCell: View {
-    let asset: PHAsset
+    let video: VideoRef
     let selected: Bool
     let firstSeen: Double?
 
     var body: some View {
         Color.clear
             .aspectRatio(1, contentMode: .fit)
-            .overlay { AssetThumb(asset: asset) }
+            .overlay { VideoThumb(video: video) }
             .clipped()
             .overlay(alignment: .bottomLeading) {
                 HStack(spacing: 4) {
-                    Text(formatTime(asset.duration))
+                    Text(formatTime(video.duration))
                     if let firstSeen { Text("· 👤\(formatTime(firstSeen))") }
                 }
                 .font(.caption2.bold())
@@ -124,7 +128,7 @@ struct PersonDetailView: View {
     @Environment(\.dismiss) private var dismiss
     let personId: UUID
 
-    @State private var assets: [PHAsset] = []
+    @State private var videos: [VideoRef] = []
     @State private var selected: Set<String> = []
     @State private var shareItem: ShareItem?
     @State private var busy: String?
@@ -139,14 +143,14 @@ struct PersonDetailView: View {
         let ids = store.assetIds(for: personId)
         ScrollView {
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 110), spacing: 4)], spacing: 4) {
-                ForEach(assets, id: \.localIdentifier) { a in
-                    VideoCell(asset: a,
-                              selected: selected.contains(a.localIdentifier),
-                              firstSeen: store.firstSeen(personId, in: a.localIdentifier))
-                        .onTapGesture { toggle(a.localIdentifier) }
+                ForEach(videos) { v in
+                    VideoCell(video: v,
+                              selected: selected.contains(v.id),
+                              firstSeen: store.firstSeen(personId, in: v.id))
+                        .onTapGesture { toggle(v.id) }
                         .contextMenu {
                             Button(role: .destructive) {
-                                store.removeVideo(a.localIdentifier, from: personId)
+                                store.removeVideo(v.id, from: personId)
                             } label: {
                                 Label("Không phải \(name)", systemImage: "person.fill.xmark")
                             }
@@ -156,7 +160,7 @@ struct PersonDetailView: View {
             .padding(4)
         }
         .overlay {
-            if assets.isEmpty { ContentUnavailableView("Chưa có video", systemImage: "video.slash") }
+            if videos.isEmpty { ContentUnavailableView("Chưa có video", systemImage: "video.slash") }
         }
         .overlay {
             if let busy {
@@ -169,7 +173,7 @@ struct PersonDetailView: View {
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
-                    Button("Chọn tất cả") { selected = Set(ids) }
+                    Button("Chọn tất cả") { selected = Set(videos.map(\.id)) }
                     Button("Bỏ chọn") { selected = [] }
                     Divider()
                     Button("Thêm vào album \"⚽ \(name)\"", systemImage: "rectangle.stack.badge.plus") {
@@ -191,8 +195,8 @@ struct PersonDetailView: View {
             }
         }
         .task(id: ids) {
-            assets = PhotoService.assets(ids: ids)
-            selected = selected.intersection(ids)
+            videos = store.videoRefs(ids: ids)
+            selected = selected.intersection(videos.map(\.id))
         }
         .sheet(item: $shareItem) { item in
             ShareSheet(urls: item.urls)
@@ -216,14 +220,17 @@ struct PersonDetailView: View {
     }
 
     private func send() {
-        let chosen = assets.filter { selected.contains($0.localIdentifier) }
+        let chosen = videos.filter { selected.contains($0.id) }
         PhotoService.clearShareDir()
         Task {
             var urls: [URL] = []
-            for (i, a) in chosen.enumerated() {
+            for (i, v) in chosen.enumerated() {
                 busy = "Đang lấy video gốc \(i + 1)/\(chosen.count)…"
                 do {
-                    urls.append(try await PhotoService.exportOriginal(a))
+                    switch v {
+                    case .file(_, let url, _): urls.append(url)
+                    case .asset(let a): urls.append(try await PhotoService.exportOriginal(a))
+                    }
                 } catch {
                     store.lastError = "Không lấy được video gốc: \(error.localizedDescription)"
                 }
@@ -234,7 +241,12 @@ struct PersonDetailView: View {
     }
 
     private func makeAlbum() {
-        let chosen = selected.isEmpty ? assets : assets.filter { selected.contains($0.localIdentifier) }
+        let pool = selected.isEmpty ? videos : videos.filter { selected.contains($0.id) }
+        let chosen: [PHAsset] = pool.compactMap { if case .asset(let a) = $0 { return a } else { return nil } }
+        guard !chosen.isEmpty else {
+            store.lastError = "Album chỉ dùng được cho video quét theo ngày (cần quyền Ảnh)."
+            return
+        }
         Task {
             busy = "Đang thêm vào album…"
             do {

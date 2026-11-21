@@ -1,5 +1,8 @@
+import AVFoundation
 import Foundation
 import Photos
+import PhotosUI
+import SwiftUI
 import UIKit
 
 @MainActor
@@ -180,6 +183,7 @@ final class AppStore: ObservableObject {
 
     func resetAll() {
         stopScan()
+        try? FileManager.default.removeItem(at: PhotoService.importedDir)
         db = Database()
         refreshClusters()
         save()
@@ -200,14 +204,7 @@ final class AppStore: ObservableObject {
             info = "Không có video mới trong khoảng thời gian này."
             return
         }
-        if engine == nil {
-            do { engine = try FaceEngine() } catch {
-                lastError = error.localizedDescription
-                return
-            }
-        }
-        guard let engine else { return }
-        let scanner = VideoScanner(engine: engine, interval: db.sampleInterval)
+        guard let scanner = makeScanner() else { return }
 
         scanProgress = ScanProgress(total: assets.count, done: 0, current: "", faces: 0)
         UIApplication.shared.isIdleTimerDisabled = true
@@ -233,6 +230,95 @@ final class AppStore: ObservableObject {
 
     func stopScan() {
         scanTask?.cancel()
+    }
+
+    /// Scan videos chosen in the system picker (works without Photos permission).
+    func scanPicked(_ items: [PhotosPickerItem]) {
+        guard scanTask == nil else { return }
+        lastError = nil
+        info = nil
+        let todo = items.filter { item in
+            guard let id = item.itemIdentifier else { return true }
+            return db.videos[id] == nil
+        }
+        guard !todo.isEmpty else {
+            info = "Các video này đã được quét rồi."
+            return
+        }
+        guard let scanner = makeScanner() else { return }
+
+        scanProgress = ScanProgress(total: todo.count, done: 0, current: "", faces: 0)
+        UIApplication.shared.isIdleTimerDisabled = true
+
+        scanTask = Task { [weak self] in
+            for (i, item) in todo.enumerated() {
+                if Task.isCancelled { break }
+                self?.scanProgress?.current = "Đang lấy video \(i + 1)…"
+                var copied: URL?
+                do {
+                    guard let movie = try await item.loadTransferable(type: PickedMovie.self) else {
+                        throw PhotoError.noResource
+                    }
+                    copied = movie.url
+                    self?.scanProgress?.current = "Đang quét \(movie.url.lastPathComponent)"
+                    let id = item.itemIdentifier ?? "file:\(movie.url.lastPathComponent)"
+                    var (video, faces) = try await scanner.scan(av: AVURLAsset(url: movie.url), id: id)
+                    video.localFile = movie.url.lastPathComponent
+                    self?.ingest(video: video, faces: faces)
+                } catch is CancellationError {
+                    if let copied { try? FileManager.default.removeItem(at: copied) }
+                    break
+                } catch {
+                    if let copied { try? FileManager.default.removeItem(at: copied) }
+                    self?.lastError = "Lỗi video \(i + 1): \(error.localizedDescription)"
+                }
+                self?.scanProgress?.done = i + 1
+            }
+            self?.finishScan()
+        }
+    }
+
+    private func makeScanner() -> VideoScanner? {
+        if engine == nil {
+            do { engine = try FaceEngine() } catch {
+                lastError = error.localizedDescription
+                return nil
+            }
+        }
+        guard let engine else { return nil }
+        return VideoScanner(engine: engine, interval: db.sampleInterval)
+    }
+
+    var importedSizeText: String {
+        _ = db.videos.count // recompute when videos change
+        return ByteCountFormatter.string(fromByteCount: PhotoService.importedSize(), countStyle: .file)
+    }
+
+    func clearImported() {
+        let ids = Set(db.videos.values.filter { $0.localFile != nil }.map(\.assetId))
+        db.faces.removeAll { ids.contains($0.assetId) }
+        for id in ids { db.videos[id] = nil }
+        try? FileManager.default.removeItem(at: PhotoService.importedDir)
+        refreshClusters()
+        save()
+    }
+
+    /// Videos to show for a set of ids: imported copies first-class, Photos assets when permitted.
+    func videoRefs(ids: [String]) -> [VideoRef] {
+        var files: [(VideoRef, Date)] = []
+        var assetIds: [String] = []
+        for id in ids {
+            if let v = db.videos[id], let name = v.localFile {
+                let url = PhotoService.importedDir.appendingPathComponent(name)
+                if FileManager.default.fileExists(atPath: url.path) {
+                    files.append((.file(id: id, url: url, duration: v.duration), v.scannedAt))
+                    continue
+                }
+            }
+            assetIds.append(id)
+        }
+        let assets = PhotoService.assets(ids: assetIds).map { VideoRef.asset($0) }
+        return files.sorted { $0.1 > $1.1 }.map(\.0) + assets
     }
 
     private func ingest(video: VideoRecord, faces: [FaceRecord]) {
