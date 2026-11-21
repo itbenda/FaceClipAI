@@ -11,6 +11,16 @@ struct ScanView: View {
     @State private var confirmReset = false
 
     private var authorized: Bool { auth == .authorized || auth == .limited }
+    private var authLabel: String {
+        switch auth {
+        case .notDetermined: return "chưa hỏi"
+        case .restricted: return "bị hệ thống chặn"
+        case .denied: return "đã từ chối"
+        case .authorized: return "toàn bộ"
+        case .limited: return "giới hạn"
+        @unknown default: return "khác"
+        }
+    }
     private var rangeStart: Date { Calendar.current.startOfDay(for: from) }
     private var rangeEnd: Date {
         Calendar.current.date(byAdding: DateComponents(day: 1, second: -1),
@@ -26,9 +36,15 @@ struct ScanView: View {
                             requestPhotos()
                         }
                     } footer: {
-                        Text(auth == .notDetermined
-                             ? "Video được xử lý hoàn toàn trên iPhone, không upload đi đâu."
-                             : "Quyền Ảnh đang bị tắt. Vào Cài đặt → FaceClip → Ảnh → chọn \"Truy cập toàn bộ\".")
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(auth == .notDetermined
+                                 ? "Video được xử lý hoàn toàn trên iPhone, không upload đi đâu."
+                                 : auth == .restricted
+                                 ? "iOS đang chặn quyền Ảnh (Thời gian sử dụng hoặc hồ sơ quản lý thiết bị). Kiểm tra Cài đặt → Thời gian sử dụng → Giới hạn nội dung & quyền riêng tư → Ảnh."
+                                 : "Quyền Ảnh đang bị tắt. Vào Cài đặt → FaceClip → Ảnh → chọn \"Truy cập toàn bộ\".")
+                            Text("Trạng thái quyền: \(authLabel) (\(auth.rawValue))")
+                                .font(.caption2.monospaced())
+                        }
                     }
                 }
 
@@ -104,6 +120,7 @@ struct ScanView: View {
                                 titleVisibility: .visible) {
                 Button("Xoá", role: .destructive) { store.resetAll() }
             }
+            .onAppear { auth = PHPhotoLibrary.authorizationStatus(for: .readWrite) }
             .onChange(of: scenePhase) { _, phase in
                 // user may have changed the permission in Settings
                 if phase == .active { auth = PHPhotoLibrary.authorizationStatus(for: .readWrite) }
